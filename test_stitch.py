@@ -1,8 +1,17 @@
-"""Simulated screens: check that only the scrolled panel is joined, exactly."""
+"""Simulated screens: check how scrolled captures are joined.
+
+The contract:
+  * The result is ALWAYS exactly as wide as the screen. Where the user
+    clicked must never change that; only the height depends on how far the
+    page was scrolled.
+  * The scrolling part is joined exactly, with nothing missing, whether or
+    not the page was scrolled all the way to the bottom.
+  * Parts that never scroll (browser toolbar, taskbar, sticky header) are
+    not repeated down the page.
+"""
 import numpy as np
 from stitcher import stitch
 
-rng = np.random.default_rng(7)
 SW, SH = 1000, 700                       # screen size
 
 
@@ -22,69 +31,98 @@ def noise(h, w, seed):
     return np.random.default_rng(seed).integers(0, 255, (h, w, 3)).astype(np.uint8)
 
 
-def run(name, screens, virtual, panel_x0, hint=None, min_h=None):
-    """virtual: the full tall content of the panel, whose left edge is at
-    screen column panel_x0. The result must be an exact, continuous crop of
-    it: columns inside the panel, starting at the top, complete height."""
-    import stitcher
-    out = stitch(screens, hint)
-    # Plain columns at the edges (background next to the panel) are fine:
-    # every one is a single colour from top to bottom. Compare the rest.
-    plain = (out == out[:1]).all(axis=(0, 2))
-    while out.shape[1] > 1 and plain[0]:
-        out, plain = out[:, 1:], plain[1:]
-    while out.shape[1] > 1 and plain[-1]:
-        out, plain = out[:, :-1], plain[:-1]
+def check(name, out, want_h, virtual=None, x0=0, pw=0, tol=30):
+    """Full width, about the right height, and (when `virtual`, the whole
+    tall content of the scrolling panel, pw wide, is given) the screen columns
+    x0..x0+pw an exact, top-aligned copy of it."""
     h, w = out.shape[:2]
-    want_h = min_h or virtual.shape[0]
-    ok, why = False, ""
-    # find which columns of the panel the output corresponds to
-    for x in range(0, virtual.shape[1] - w + 1):
-        if h <= virtual.shape[0] and np.array_equal(out, virtual[:h, x:x + w]):
-            ok = True
-            break
-    if ok:
-        rest = np.concatenate([virtual[:h, :x], virtual[:h, x + w:]], axis=1)
-        if rest.size and (rest != virtual[0, 0]).any():
-            ok, why = False, "content cut off at the sides"
-    if not ok and not why:
-        why = "not an exact crop of the page"
-    elif h < want_h - 30:
-        ok, why = False, f"too short ({h} < {want_h})"
-    elif w < virtual.shape[1] * 0.7:
-        ok, why = False, f"too narrow ({w})"
-    print(f"{name:42s} -> {h}x{w}  " + ("OK" if ok else "FAIL: " + why))
+    ok, why = True, ""
+    if w != SW:
+        ok, why = False, f"width {w}, should be the full {SW}"
+    elif abs(h - want_h) > tol:
+        ok, why = False, f"height {h}, expected about {want_h}"
+    elif virtual is not None:
+        n = min(h, virtual.shape[0])
+        if not np.array_equal(out[:n, x0:x0 + pw], virtual[:n, :pw]):
+            ok, why = False, "scrolling part is not an exact crop of the page"
+    print(f"{name:52s} -> {w}x{h}  " + ("OK" if ok else "FAIL: " + why))
     return ok
 
 
 results = []
 
-# A) Whole web page scrolls inside a browser; toolbar, taskbar, scrollbar.
-page = text_block(3000, 960, 1, gap_rows=[(1200, 1500)])
+# ------------------------------------------------------------------ layouts
+PAGE_H = 3000
+page = text_block(PAGE_H, 960, 1, gap_rows=[(1200, 1500)])
 toolbar, taskbar = noise(90, SW, 2), noise(40, SW, 3)
 VIEW = SH - 90 - 40
+BOTTOM = PAGE_H - VIEW                   # scroll position of the very end
 
 
-def screen_a(y):
+def screen_a(y, sticky=False):
+    """Whole web page in a browser: toolbar, taskbar, scrollbar."""
     s = np.zeros((SH, SW, 3), np.uint8)
     s[:90] = toolbar
     s[90:90 + VIEW, :960] = page[y:y + VIEW]
+    if sticky:
+        s[90:130, :960] = noise(40, 960, 11)             # sticky header
     s[90:90 + VIEW, 960:] = 200                          # scrollbar track
-    t = 90 + int(y / 3000 * VIEW)
+    t = 90 + int(y / PAGE_H * VIEW)
     s[t:t + 60, 984:996] = 90                            # moving thumb
     s[SH - 40:] = taskbar
     return s
 
 
+# A) the basics
 ys = [0, 250, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2370]
-results.append(run("A whole page, even steps", [screen_a(y) for y in ys],
-                   page[:2370 + VIEW], 0))
+results.append(check("A whole page, even steps",
+                     stitch([screen_a(y) for y in ys], (500, 300)),
+                     2370 + VIEW, page, 0, 960))
 ys = [0, 300, 470, 900, 1150, 1260, 1700, 2100, 2370]
-results.append(run("A whole page, uneven steps", [screen_a(y) for y in ys],
-                   page[:2370 + VIEW], 0))
+results.append(check("A whole page, uneven steps",
+                     stitch([screen_a(y) for y in ys], (500, 300)),
+                     2370 + VIEW, page, 0, 960))
 
-# B) Dennis's case: sidebar scrolls, main content fixed, sticky row at the
-#    sidebar bottom, floating button, browser toolbar and taskbar.
+# D) Where you click must never change the result. Includes the scrollbar,
+#    the very edges, the browser toolbar and the taskbar.
+ys = [0, 450, 900, 1350, 1800, 2250]
+for hint in [(500, 300), (5, 300), (990, 300), (975, 100), (500, 5),
+             (500, 690), (980, 500), (20, 650)]:
+    results.append(check(f"D click at {hint}, stops short of the end",
+                         stitch([screen_a(y) for y in ys], hint),
+                         ys[-1] + VIEW, page, 0, 960))
+
+# E) Scrolled all the way to the bottom: the last step is usually shorter
+#    than the others, down to a few pixels.
+for last in (1, 5, 30, 120, 300, 450):
+    ys = [0, 450, 900, 1350, 1800, 2100, BOTTOM - last, BOTTOM]
+    ys = sorted(set(y for y in ys if 0 <= y <= BOTTOM))
+    results.append(check(f"E bottom reached, last step {last}px",
+                         stitch([screen_a(y) for y in ys], (500, 300)),
+                         PAGE_H, page, 0, 960))
+ys = [0, 450, 900, 1350, 1800, 2100, 2400, BOTTOM]
+for hint in [(5, 300), (990, 300), (500, 690)]:
+    results.append(check(f"E bottom reached, click at {hint}",
+                         stitch([screen_a(y) for y in ys], hint),
+                         PAGE_H, page, 0, 960))
+
+# F) Bottom reached with a sticky header, and with a blank footer
+ys = [0, 450, 900, 1350, 1800, 2100, 2400, BOTTOM]
+results.append(check("F bottom reached, sticky header",
+                     stitch([screen_a(y, True) for y in ys], (500, 300)),
+                     PAGE_H - 40))     # the header hides the first 40 rows
+page_blank = text_block(PAGE_H, 960, 1, gap_rows=[(1200, 1500),
+                                                  (PAGE_H - 420, PAGE_H)])
+page_keep = page
+page = page_blank
+ys = [0, 450, 900, 1350, 1800, 2100, 2400, BOTTOM]
+results.append(check("F bottom reached, blank footer",
+                     stitch([screen_a(y) for y in ys], (500, 300)),
+                     PAGE_H, page_blank, 0, 960))
+page = page_keep
+
+
+# B) A sidebar scrolls, the main area beside it does not.
 side = text_block(1800, 230, 4)
 main = text_block(VIEW, 740, 5)
 account = noise(50, 230, 6)
@@ -103,12 +141,17 @@ def screen_b(y):
 
 
 ys = [0, 300, 600, 900, 1200, 1280]
-exp = side[:1280 + SIDE_VIEW]          # the floating button is left out
-results.append(run("B sidebar scrolls, main fixed", [screen_b(y) for y in ys],
-                   exp, 10, (100, 300)))
+out = stitch([screen_b(y) for y in ys], (100, 300))
+ok = check("B sidebar scrolls, main fixed (full width)", out,
+           1280 + SIDE_VIEW, side[:1280 + SIDE_VIEW], 10, 230)
+if ok:       # the fixed main area appears once, not once per scroll
+    below = out[SIDE_VIEW + 40:, 260:1000]
+    ok = bool((below > 200).mean() > 0.99)
+    print(f"{'B fixed main area is not repeated':52s} -> "
+          + ("OK" if ok else "FAIL: copies of it down the page"))
+results.append(ok)
 
-# C) Main content scrolls, sidebar fixed, sticky header in the panel,
-#    a label at the top that changes every frame (like the app's info bar).
+# C) The main area scrolls, the sidebar beside it does not.
 long_main = text_block(2600, 740, 8, gap_rows=[(900, 1100)])
 side_fixed = text_block(VIEW, 230, 9)
 sticky = noise(40, 740, 10)
@@ -126,9 +169,78 @@ def screen_c(y, i):
 
 
 ys = [0, 260, 520, 600, 860, 1300, 1660, 1920, 2010]
-results.append(run("C main scrolls, sidebar fixed, uneven",
-                   [screen_c(y, i) for i, y in enumerate(ys)],
-                   long_main[:2010 + VIEW - 40], 260, (600, 400)))
+out = stitch([screen_c(y, i) for i, y in enumerate(ys)], (600, 400))
+ok = check("C main scrolls, sidebar fixed (full width)", out,
+           2010 + VIEW - 40, long_main[:2010 + VIEW - 40], 260, 740)
+if ok:
+    below = out[VIEW:, 10:240]
+    ok = bool((below > 200).mean() > 0.99)
+    print(f"{'C fixed sidebar is not repeated':52s} -> "
+          + ("OK" if ok else "FAIL: copies of it down the page"))
+results.append(ok)
+
+# G) A busier page: solid bands, photos, a dark footer, a floating button, and
+#    flat stretches where the overlap holds nothing to match. Click anywhere.
+PW = SW - 17
+
+
+def busy_page(seed, ph, footer=300):
+    r = np.random.default_rng(seed)
+    pg = np.full((ph, PW, 3), 255, np.uint8)
+    y = 0
+    while y < ph - footer:
+        kind = int(r.integers(0, 4))
+        h = min(int(r.integers(120, 520)), ph - footer - y)
+        if kind == 0:                                    # coloured band + text
+            pg[y:y + h] = r.integers(30, 220, 3)
+            for k in range(0, h - 40, 36):
+                n, x0 = int(r.integers(100, 600)), int(r.integers(50, 300))
+                pg[y + k + 10:y + k + 26, x0:x0 + n] = 255
+        elif kind == 1:                                  # text
+            for k in range(0, h - 28, 28):
+                n = int(r.integers(100, PW - 200))
+                pg[y + k + 6:y + k + 18, 100:100 + n] = r.integers(0, 140, (12, n, 3))
+        elif kind == 2:                                  # photo
+            pg[y + 10:y + h - 10, 150:PW - 150] = r.integers(0, 255, (h - 20, PW - 300, 3))
+        y += h                                           # kind 3: blank
+    pg[ph - footer:] = (30, 30, 40)                      # dark footer
+    for k in range(20, footer - 30, 40):
+        pg[ph - footer + k:ph - footer + k + 14, 100:100 + int(r.integers(100, 500))] = 200
+    return pg
+
+
+def screen_g(pg, y, tb, tk):
+    ph = pg.shape[0]
+    s = np.zeros((800, SW + 200, 3), np.uint8)
+    s[:100] = tb
+    s[100:100 + 652, :PW] = pg[y:y + 652]
+    s[100:100 + 652, PW:] = 235
+    t = 100 + int(y / ph * 572)
+    s[t:t + 80, PW + 3:PW + 14] = 140
+    s[100 + 652 - 90:100 + 652 - 30, PW - 90:PW - 30] = (0, 120, 255)  # button
+    s[800 - 48:] = tk
+    return s
+
+
+tb, tk = noise(100, SW + 200, 21), noise(48, SW + 200, 22)
+rng = np.random.default_rng(0)
+SW_G = SW + 200
+for seed, step in [(0, 300), (1, 400), (3, 500), (6, 300), (9, 400)]:
+    ph = int(rng.integers(2400, 4200))
+    pg = busy_page(seed, ph)
+    bottom = ph - 652
+    for reach in ("short of the end", "bottom"):
+        ys = list(range(0, bottom, step)) + ([bottom] if reach == "bottom" else [])
+        hint = (int(rng.integers(0, SW_G)), int(rng.integers(100, 752)))
+        out = stitch([screen_g(pg, y, tb, tk) for y in ys], hint)
+        h, w = out.shape[:2]
+        want = ys[-1] + 652
+        # The last step may overshoot by blank space when it is short and
+        # the overlap is flat; it must never be narrower or lose content.
+        ok = (w == SW_G) and (-30 <= h - want <= step)
+        print(f"{'G busy page %d, %s, click %s' % (seed, reach, hint):52s} -> "
+              f"{w}x{h}  " + ("OK" if ok else f"FAIL: expected {SW_G}x~{want}"))
+        results.append(ok)
 
 print("ALL OK" if all(results) else "SOME FAILED")
 raise SystemExit(0 if all(results) else 1)
