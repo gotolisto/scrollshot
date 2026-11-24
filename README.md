@@ -33,10 +33,12 @@ and Quit. Closing the window keeps it running in the tray.
    **Double-click** to save. Nothing is saved until you double-click.
    **Esc** or **right-click** cancels.
 
-ScrollShot works out which part of the screen actually scrolled and saves only that
-part as one continuous image: no browser toolbar, no taskbar, no repeated sticky
-headers, account rows or floating buttons. If only a sidebar scrolled, you get the
-sidebar; if the page scrolled, you get the page.
+The saved image is always as wide as your whole screen, wherever you click; only its
+height depends on how far you scrolled. ScrollShot works out which rows of the screen
+actually scrolled and joins them into one continuous image: no browser toolbar, no
+taskbar, no repeated sticky headers, account rows or floating buttons. Anything that
+doesn't scroll, such as a fixed sidebar next to the page, appears once at the top
+instead of being repeated down the image.
 
 Every screenshot is saved as a PNG **and copied to the clipboard**, ready to paste.
 

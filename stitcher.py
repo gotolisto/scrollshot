@@ -6,10 +6,12 @@ app, or the page inside the browser. Everything else (browser toolbar,
 taskbar, a fixed sidebar, sticky headers/footers, floating buttons) stays put.
 
 For each pair of frames we work out:
-  * how far the content moved (d pixels), and
-  * the rectangle that moved: the columns and rows whose pixels in the new
-    frame equal the old frame shifted up by d.
-Then only that rectangle is joined, so nothing that stayed still is repeated.
+  * how far the content moved (d pixels), measured over the WHOLE screen
+    width, so it never depends on where the user happened to click, and
+  * which rows moved (the scrolling panel's top and bottom edge).
+The result is always exactly as wide as the screen; only its height depends
+on how far the page was scrolled. Rows that never scrolled (browser toolbar,
+taskbar) are left out.
 """
 import numpy as np
 
@@ -20,6 +22,8 @@ SHIFT_OK = 0.8              # share of pixels that must match after the shift
 SAME_OK = 0.995             # share that must match unshifted to count as still
 GAP = 48                    # quiet gap (px) still treated as the same area
 MARGIN = 16                 # plain margin kept around the moving content
+SIDE_BAND = 0.5             # a fixed sidebar's band covers this share of the panel
+SIDE_SHARE = 0.7            # how often a fixed pixel must disagree with the scroll
 
 
 # ---------------------------------------------------------------- basics
@@ -88,116 +92,113 @@ def _pick_run(mask, weight, hint=None):
 
 
 # ---------------------------------------------------------------- offset
-def _trimmed(row_errors, keep=0.8):
-    n = max(1, int(len(row_errors) * keep))
-    return float(np.partition(row_errors, n - 1)[:n].mean())
+STRIPS = 48                 # vertical strips used to vote on the scroll distance
+CELL_EQ = 3.0               # brightness difference that still counts as equal
+MIN_CELLS = 12              # fewest matching cells that prove an overlap
+STRONG_CELLS = 250          # matching cells that settle a distance on their own
+SHARP = 0.08                # a real shift beats its neighbours (d +/- 1) by this much
 
 
-def find_offset_gray(gp, gc, top, bottom, c0, c1, expected=None):
-    """How many pixels the content inside the rectangle moved up between
-    two gray frames. Returns (offset, error)."""
-    h = bottom - top
-    if h < 4 or c1 - c0 < 4:
-        return 0, 0.0
-    gp = gp[top:bottom, c0:c1]
-    gc = gc[top:bottom, c0:c1]
-    pp, pc = _profile(gp), _profile(gc)
+def _edge_cells(p, k=2):
+    """Cells that differ from the one k rows above or below, i.e. cells that
+    carry picture detail. Flat areas match any shift, so they must not vote."""
+    e = np.zeros(p.shape, bool)
+    if p.shape[0] > k:
+        diff = np.abs(p[k:] - p[:-k]) > CELL_EQ
+        e[k:] |= diff
+        e[:-k] |= diff
+    return e
 
-    min_overlap = max(16, h // 12)
-    max_d = h - min_overlap
-    if max_d < 1:
-        return h, 0.0
 
-    errs = np.empty(max_d, np.float32)
-    errs_t = np.empty(max_d, np.float32)
+def _pixel_detail(g):
+    """Same idea at pixel level (every second column, to keep it fast)."""
+    s = g[:, ::2]
+    e = np.zeros(s.shape, bool)
+    if s.shape[0] > 2:
+        dy = np.abs(s[2:] - s[:-2]) > PIX_EQ
+        e[2:] |= dy
+        e[:-2] |= dy
+    dx = np.abs(s[:, 1:] - s[:, :-1]) > PIX_EQ
+    e[:, 1:] |= dx
+    e[:, :-1] |= dx
+    return e
+
+
+def _prepare(img):
+    g = _gray(img)
+    p = _profile(g, STRIPS)
+    return {"g": g, "p": p, "e": _edge_cells(p), "pe": _pixel_detail(g)}
+
+
+def _pair(A, B):
+    """B (the newer frame) with the map of what did not move since A."""
+    B = dict(B)
+    B["still"] = (np.abs(A["p"] - B["p"]) <= CELL_EQ) & (A["e"] | B["e"])
+    B["pstill"] = ((np.abs(A["g"][:, ::2] - B["g"][:, ::2]) <= PIX_EQ)
+                   & (A["pe"] | B["pe"]))
+    return A, B
+
+
+def _voting_cells(A, B, d):
+    """Cells that may vote for shift d: they carry detail in both frames (the
+    same content looks detailed wherever it is), and aren't part of something
+    that stayed exactly where it was (toolbar, taskbar, sidebar)."""
+    h = A["g"].shape[0]
+    still = B["still"]
+    return (A["e"][d:] & B["e"][:h - d]) & ~still[d:] & ~still[:h - d]
+
+
+def shift_evidence(A, B):
+    """For every possible scroll distance, how many cells of the new frame
+    equal the cell that far lower in the old one. Every vertical strip of the
+    screen votes, so it never depends on where the user clicked; flat areas
+    and anything that did not move at all don't vote, so a toolbar or a
+    fixed sidebar can't pull the answer off course.
+
+    Returns (score, peak): score[d-1] is the number of matching cells and
+    peak[d-1] says whether d stands out as a sharp peak. (Textured content
+    also half-matches itself at a shift of a pixel or two; a real shift is
+    exact and drops away on either side.)"""
+    h = A["g"].shape[0]
+    max_d = h - max(16, h // 12)
+    pa, pb = A["p"], B["p"]
+    score = np.zeros(max(max_d, 0), np.float64)
+    total = np.zeros_like(score)
     for d in range(1, max_d + 1):
-        row_err = np.abs(pp[d:] - pc[:h - d]).mean(axis=1)
-        errs[d - 1] = row_err.mean()
-        errs_t[d - 1] = _trimmed(row_err)
-
-    cand = set((np.argsort(errs)[:10] + 1).tolist())
-    cand |= set((np.argsort(errs_t)[:5] + 1).tolist())
-    if expected and 1 <= expected <= max_d:
-        cand.add(int(expected))
-    scored = []
-    for d in cand:
-        d = int(d)
-        row_err = np.abs(gp[d:, ::2] - gc[:h - d, ::2]).mean(axis=1)
-        scored.append((float(row_err[::2].mean()), d, _trimmed(row_err)))
-    scored.sort()
-    best_e, best_d, best_t = scored[0]
-
-    # Exact ties (blank stretches, repeating lists): prefer last distance.
-    if expected:
-        close = [s for s in scored if s[0] <= best_e + max(0.05, best_e * 0.05)]
-        best_e, best_d, best_t = min(close, key=lambda s: abs(s[1] - expected))
-
-    # "No overlap" is judged on the best-matching 80% of rows, so a sticky
-    # bar or changing label inside the box doesn't fake it.
-    best_e = best_t
-    if best_e > NO_OVERLAP_ERROR:
-        return h, best_e            # no overlap: scrolled more than a screen
-    return best_d, best_e
+        info = _voting_cells(A, B, d)
+        total[d - 1] = info.sum()
+        score[d - 1] = ((np.abs(pa[d:] - pb[:h - d]) <= CELL_EQ) & info).sum()
+    ratio = score / np.maximum(total, 1)
+    left = np.concatenate([[0.0], ratio[:-1]])
+    right = np.concatenate([ratio[1:], [0.0]])
+    peak = (score >= MIN_CELLS) & (ratio - np.maximum(left, right) >= SHARP)
+    return score, peak
 
 
-def find_offset(prev, cur, top, bottom, c0, c1, expected=None):
-    return find_offset_gray(_gray(prev), _gray(cur), top, bottom, c0, c1,
-                            expected)
+def choose_shift(ev, usual):
+    """Pick the scroll distance for one pair from its evidence.
+    usual: the step most pairs of this capture agree on (every click scrolls
+    by the same amount), or None. A different distance is only believed when
+    its evidence is strong, as for the short last step at the bottom of a
+    page. Returns None when the overlap holds nothing to match (a blank
+    stretch, or a jump bigger than the screen)."""
+    if ev is None:
+        return None
+    score, peak = ev
+    hit = np.where(peak)[0]
+    best = int(hit[np.argmax(score[hit])]) + 1 if len(hit) else None
+    n_best = float(score[best - 1]) if best else 0.0
+    if usual and 1 <= usual <= len(score) and peak[usual - 1] \
+            and score[usual - 1] >= 0.5 * n_best:
+        return int(usual)                      # fits the usual step
+    if best and n_best >= STRONG_CELLS:
+        return best                            # clearly a different step
+    if usual:
+        return None                            # too little to go on
+    return best                                # None if nothing at all
 
 
 # ------------------------------------------------------- moving rectangle
-def _initial_rect(ga, gb, hint):
-    """Rough box to measure the scroll in: a narrow strip around the point
-    where the user scrolled (that is where the moving panel is), or else
-    the biggest changed area."""
-    ch = np.abs(ga - gb) > PIXEL_THRESHOLD
-    h, w = ch.shape
-    if hint is not None:
-        hx = min(max(int(hint[0]), 0), w - 1)
-        c0, c1 = max(0, hx - 40), min(w, hx + 40)
-        rowc = ch[:, c0:c1].sum(axis=1)
-        busy = _close_gaps(rowc > max(2, (c1 - c0) * 0.02), GAP)
-        rr = _pick_run(busy, rowc, int(hint[1]))
-        if rr and rr[1] - rr[0] > 16:
-            return rr[0], rr[1], c0, c1
-    colc = ch.sum(axis=0)
-    cr = _pick_run(_close_gaps(colc > max(2, h * 0.01), GAP), colc,
-                   None if hint is None else hint[0])
-    if cr is None:
-        return None
-    rowc = ch[:, cr[0]:cr[1]].sum(axis=1)
-    rr = _pick_run(_close_gaps(rowc > max(2, (cr[1] - cr[0]) * 0.01), GAP),
-                   rowc, None if hint is None else hint[1])
-    if rr is None:
-        return None
-    return rr[0], rr[1], cr[0], cr[1]
-
-
-def _trim(run, moving, limit, edge_strip=0, changed=None):
-    """Keep the panel's full width, but cut off a scrollbar at either edge:
-    a narrow moving strip that changes in one or two solid blocks (the
-    thumb), where text would change in many separate lines."""
-    s, e = run
-    idx = np.where(moving[s:e])[0]
-    if len(idx) == 0 or not edge_strip or changed is None:
-        return run
-
-    def thumb_like(group):
-        if group[-1] - group[0] >= edge_strip:
-            return False
-        rows = changed[:, s + group[0]:s + group[-1] + 1].any(axis=1)
-        return len(_runs(rows)) <= 2
-
-    groups = np.split(idx, np.where(np.diff(idx) > 4)[0] + 1)
-    if len(groups) > 1 and thumb_like(groups[-1]):
-        groups.pop()
-        e = min(e, s + int(groups[-1][-1]) + 1 + MARGIN, limit)
-    if len(groups) > 1 and thumb_like(groups[0]):
-        groups.pop(0)
-        s = max(s, s + int(groups[0][0]) - MARGIN)
-    return s, e
-
-
 def _moving_cols(ga, gb, d, top, bottom, hint):
     """Columns of the scrolling panel: from the first to the last column
     that clearly slid with the scroll (everything in between belongs to
@@ -301,72 +302,124 @@ def _moving_rows(ga, gb, d, c0, c1, hint):
     return top, top + int(idx[-1]) + 1 + d
 
 
-def analyze_pair(ga, gb, hint=None, expected=None):
-    """Return dict(top, bottom, c0, c1, d) for what scrolled, or None."""
-    r = _initial_rect(ga, gb, hint)
-    if r is None:
+def pair_rect(A, B, d, hint=None):
+    """Rows (top, bottom) of the panel that scrolled by d between two frames,
+    plus the columns it was found in (used only to judge the rows)."""
+    h, w = A["g"].shape
+    A, B = _pair(A, B)
+    pa, pb = A["p"], B["p"]
+    match = (np.abs(pa[d:] - pb[:h - d]) <= CELL_EQ) & _voting_cells(A, B, d)
+    hits = match.sum(axis=0)
+    if hits.max() == 0:
         return None
-    top, bottom, c0, c1 = r
-    d, err = find_offset_gray(ga, gb, top, bottom, c0, c1, expected)
-    for _ in range(3):
-        if err > NO_OVERLAP_ERROR or d <= 0 or d >= bottom - top:
+    strips = np.where(hits >= max(1, 0.25 * hits.max()))[0]
+    edges = np.linspace(0, w, pa.shape[1] + 1).astype(int)
+    c0, c1 = int(edges[strips[0]]), int(edges[strips[-1] + 1])
+    rowhit = match[:, strips].sum(axis=1)
+    hy = None if hint is None else min(max(int(hint[1]), 0), h - d - 1)
+    run = _pick_run(_close_gaps(rowhit > 0, GAP), rowhit, hy)
+    if run is None:
+        return None
+    top, bottom = run[0], min(h, run[1] + d)
+
+    # Tighten the rows (cut off a fixed header/footer) with the panel's own
+    # columns; d is already known so it stays as measured.
+    ga, gb = A["g"], B["g"]
+    for _ in range(2):
+        if bottom - top - d < 8:
             break
         cols = _moving_cols(ga, gb, d, top, bottom,
                             None if hint is None else hint[0])
         if cols:
             c0, c1 = cols
-        rows = _moving_rows(ga, gb, d, c0, c1,
-                            None if hint is None else hint[1])
+        rows = _moving_rows(ga, gb, d, c0, c1, hy)
         if rows:
             top, bottom = rows
-        new = find_offset_gray(ga, gb, top, bottom, c0, c1, expected)
-        if new[0] == d:
-            break
-        d, err = new
-    return {"top": top, "bottom": bottom, "c0": c0, "c1": c1, "d": d}
+    return top, bottom
 
 
 # ---------------------------------------------------------------- stitch
 def stitch(frames, hint=None):
-    """Join the scrolled area of consecutive frames into one image.
-    hint: (x, y) in frame pixels where the user scrolled, if known."""
+    """Join consecutive frames into one tall image, always as wide as the
+    screen. hint: (x, y) in frame pixels where the user clicked, if known;
+    it only helps choose between two panels that scroll independently."""
     if len(frames) == 1:
         return frames[0]
-    grays = [_gray(f) for f in frames]
-    found = []
-    expected = None
-    for i in range(1, len(frames)):
-        p = analyze_pair(grays[i - 1], grays[i], hint, expected)
-        if p:
-            found.append(p)
-            expected = p["d"]
-    if not found:
+    h, w = frames[0].shape[:2]
+    n = len(frames)
+    same = [False] + [similar(frames[i - 1], frames[i]) for i in range(1, n)]
+
+    # Pass 1: how far did each pair scroll, as far as its pictures can tell?
+    evidence = [None] * n
+    prev = _prepare(frames[0])
+    for i in range(1, n):
+        cur = _prepare(frames[i])
+        if not same[i]:
+            evidence[i] = shift_evidence(*_pair(prev, cur))
+        prev = cur
+
+    # Every click scrolls by the same amount, so most pairs agree. Add up
+    # each pair's evidence per distance: the real step collects support from
+    # every pair, while a look-alike (repeating text, a list) only fools one
+    # or two of them. The last step is often a short one (the page ran out),
+    # so prefer the pairs before it; fall back to all of them, and only then
+    # to weaker evidence.
+    pairs = [i for i in range(1, n) if evidence[i] is not None]
+    usual = None
+    for use, need in (([i for i in pairs if i < n - 1], STRONG_CELLS),
+                      (pairs, STRONG_CELLS), (pairs, 3 * MIN_CELLS)):
+        if not use:
+            continue
+        total = sum(evidence[i][0] * evidence[i][1] for i in use)
+        if total.max() >= need:
+            usual = int(np.argmax(total)) + 1
+            break
+    ds = [0]
+    for i in range(1, n):
+        ds.append(0 if same[i] else choose_shift(evidence[i], usual))
+    # A stretch with nothing to match (a blank area) scrolled like its
+    # neighbours did. If they differ take the larger: too small a step would
+    # lose content, too large only adds blank space.
+    fallback = usual or int(h * 0.6)
+    for i in range(1, n):
+        if ds[i] is None:
+            before = next((ds[j] for j in range(i - 1, 0, -1) if ds[j]), None)
+            after = next((ds[j] for j in range(i + 1, n) if ds[j]), None)
+            near = [d for d in (before, after) if d]
+            ds[i] = max(near) if near else fallback
+    if not any(ds):
         return frames[-1]
 
-    # One rectangle for the whole capture: every column that moved in any
-    # pair, from the highest start to the lowest verified end.
-    c0 = min(p["c0"] for p in found)
-    c1 = max(p["c1"] for p in found)
-    top = min(p["top"] for p in found)
-    bottom = max(p["bottom"] for p in found)
+    # Pass 2: which rows scrolled? One band for the whole capture, taken
+    # across the full screen width.
+    rects = []
+    prev = _prepare(frames[0])
+    for i in range(1, n):
+        cur = _prepare(frames[i])
+        if ds[i] and ds[i] < h and not same[i]:
+            r = pair_rect(prev, cur, ds[i], hint)
+            if r:
+                rects.append(r)
+        prev = cur
+    if rects:
+        top = min(r[0] for r in rects)
+        bottom = max(r[1] for r in rects)
+    else:
+        top, bottom = 0, h
+    grays = [_gray(f) for f in frames]
+    return compose(frames, grays, (top, bottom, 0, w), ds)
 
-    ds = [0]
-    expected = None
-    for i in range(1, len(frames)):
-        d, _ = find_offset_gray(grays[i - 1], grays[i], top, bottom, c0, c1,
-                                expected)
-        ds.append(max(0, d))
-        if d > 0:
-            expected = d
-    return compose(frames, grays, (top, bottom, c0, c1), ds)
 
-
-def _fixed_mask(grays, ds, top, bottom, c0, c1):
+def _fixed_mask(grays, ds, top, bottom, c0, c1, share=1.0, refine=True):
     """Screen pixels inside the rectangle that stayed put in every frame
     while the content scrolled underneath (floating buttons, sticky bars).
     Plain background also looks the same in every frame, but it is also
     consistent with the scroll, so it isn't counted. Only solid areas count,
-    not single pixels that match by chance."""
+    not single pixels that match by chance. `share`: how often a pixel must
+    disagree with the scroll to count (all the time, by default). `refine`:
+    a second look that leaves out comparisons against what is already known
+    to be fixed; right for small objects, but it would drop the pixels of a
+    large fixed block, whose every comparison is against itself."""
     h = bottom - top
     cut = [g[top:bottom, c0:c1] for g in grays]
     same = np.ones(cut[0].shape, bool)
@@ -398,9 +451,11 @@ def _fixed_mask(grays, ds, top, bottom, c0, c1):
             ok = ~ignore[:h - d]
             total[d:] += ok
             bad[d:] += diff & ok
-        return (total > 0) & (bad == total)
+        return (total > 0) & (bad >= share * total)
 
     first = solid(same & unexplained(np.zeros(same.shape, bool)))
+    if not refine:
+        return first
     return solid(same & unexplained(first))
 
 
@@ -419,17 +474,56 @@ def _box_frac(mask, k):
     return total / area
 
 
+def _longest_run(mask, gap):
+    """Length of the longest stretch of True values, where pauses of up to
+    `gap` False values don't break it."""
+    runs = _runs(_close_gaps(mask, gap))
+    return max((e - s for s, e in runs), default=0)
+
+
+def _fixed_columns(fixed):
+    """Columns that belong to something fixed all the way down, like a
+    sidebar beside the scrolling part. `fixed` marks pixels that are the same
+    in every frame and that the scroll cannot explain (scrolling content
+    that merely repeats, like rows of a list, is explained by the scroll).
+    A sidebar leaves a continuous band of them covering at least half the
+    panel; a floating button, or a sticky header plus a sticky footer, never
+    makes a band that long. Lines of text end raggedly, so the columns that
+    carry a full band seed the block and it grows through the neighbouring
+    columns that hold fixed pixels."""
+    h, w = fixed.shape
+    count = fixed.sum(axis=0)
+    side = np.zeros(w, bool)
+    for x in np.where(count >= max(4, h * 0.05))[0]:
+        side[x] = _longest_run(fixed[:, x], GAP) >= h * SIDE_BAND
+    for x in range(1, w):
+        if side[x - 1] and count[x] >= 3:
+            side[x] = True
+    for x in range(w - 2, -1, -1):
+        if side[x + 1] and count[x] >= 3:
+            side[x] = True
+    return side
+
+
 def compose(frames, grays, rect, ds):
     """Paint every frame onto one tall canvas at its scroll position.
     Pixels that stayed fixed while the content moved are skipped wherever
-    another frame shows the real content there."""
+    another frame shows the real content there. Columns that are fixed all
+    the way down (a sidebar next to the scrolling part) are painted once, from
+    the first frame, with their background carried on below."""
     top, bottom, c0, c1 = rect
     h = bottom - top
     ys = np.cumsum(ds)                        # canvas row of each frame
     canvas = np.zeros((int(ys[-1]) + h, c1 - c0, 3), np.uint8)
     filled = np.zeros(canvas.shape[:2], bool)
     fixed = _fixed_mask(grays, ds, top, bottom, c0, c1)
-    keep = [~fixed] * len(frames)
+    side = _fixed_columns(_fixed_mask(grays, ds, top, bottom, c0, c1,
+                                      share=SIDE_SHARE, refine=False))
+    keep = ~fixed
+    if side.any():                            # fixed columns: first frame only
+        y0 = int(ys[0])
+        canvas[y0:y0 + h][:, side] = frames[0][top:bottom, c0:c1][:, side]
+        filled[y0:y0 + h][:, side] = True
     # Pass 1: real (moving) content. Pass 2: whatever is still empty.
     for pass_ in (1, 2):
         for i, f in enumerate(frames):
@@ -437,7 +531,13 @@ def compose(frames, grays, rect, ds):
             src = f[top:bottom, c0:c1]
             want = ~filled[y:y + h]
             if pass_ == 1:
-                want &= keep[i]
+                want &= keep
+            if i > 0 and side.any():
+                want &= ~side[None, :]
             canvas[y:y + h][want] = src[want]
             filled[y:y + h] |= want
+    if side.any() and not filled.all():
+        bg = np.median(frames[0][top:bottom, c0:c1], axis=0).astype(np.uint8)
+        empty = ~filled
+        canvas[empty] = np.broadcast_to(bg, canvas.shape)[empty]
     return canvas
