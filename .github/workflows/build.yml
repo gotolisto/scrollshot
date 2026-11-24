@@ -1,12 +1,11 @@
-# Builds the Windows installer on every push.
-# Pushing a version tag (e.g. v1.2.0) also publishes a GitHub Release with
-# ScrollShot-Setup.exe attached.
+# Builds the Windows installer on every push and pull request.
+# On main, when the VERSION in installer.nsi has no release yet, it also
+# publishes a GitHub Release (tag vVERSION) with ScrollShot-Setup.exe attached.
 name: Build
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -53,9 +52,28 @@ jobs:
         with:
           name: ScrollShot-Setup
           path: Output/ScrollShot-Setup.exe
-      - name: Publish release (version tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path installer.nsi -Pattern '!define VERSION "([^"]+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+      - name: Check for an existing release
+        id: existing
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "v${{ steps.version.outputs.version }}" --repo "${{ github.repository }}" *> $null
+          "exists=$([int]($LASTEXITCODE -eq 0))" >> $env:GITHUB_OUTPUT
+          exit 0
+      - name: Publish release
+        if: github.ref == 'refs/heads/main' && steps.existing.outputs.exists == '0'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: ScrollShot ${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
           files: Output/ScrollShot-Setup.exe
           generate_release_notes: true

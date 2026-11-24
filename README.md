@@ -82,12 +82,6 @@ Every screenshot is saved as a PNG **and copied to the clipboard**, ready to pas
 
 **Builds and releases:** GitHub Actions (`.github/workflows/build.yml`) runs the tests and
 builds `ScrollShot-Setup.exe` on Windows for every push; the installer is attached to the
-run as an artifact. To publish a release, bump `VERSION` in `installer.nsi`, then push a
-matching tag:
-
-```
-git tag v1.2.1
-git push origin v1.2.1
-```
-
-The workflow then creates the GitHub Release with the installer attached.
+run as an artifact. To publish a release, bump `VERSION` in `installer.nsi` and push to
+`main`: when that version has no release yet, the workflow creates release `vVERSION` with
+the installer attached.
