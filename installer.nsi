@@ -7,7 +7,7 @@ Unicode true
 !include "MUI2.nsh"
 
 !define APPNAME "ScrollShot"
-!define VERSION "1.2.1"
+!define VERSION "1.2.2"
 !define EXE "ScrollShot.exe"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
