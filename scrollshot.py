@@ -135,6 +135,20 @@ def set_autostart(on):
                 pass
 
 
+def alternative_spots(mon, point, count=6):
+    """Other places to try the mouse wheel when the click spot didn't scroll:
+    the same column, at other heights, from the middle of the screen out. A
+    side panel's header and footer stay put and swallow the wheel, while its
+    body scrolls."""
+    x, y = point
+    spots = []
+    for f in (0.5, 0.35, 0.65, 0.25, 0.75, 0.15, 0.85):
+        sy = int(mon["top"] + mon["height"] * f)
+        if abs(sy - y) >= 60:                  # not just next to the failed one
+            spots.append((x, sy))
+    return spots[:count]
+
+
 class ScrollShot:
     def __init__(self):
         # Before Tk: the shortcut thread must exist before the first window.
@@ -152,7 +166,8 @@ class ScrollShot:
 
         self.overlays = []      # windows currently on screen
         self.monitor = None
-        self.point = None       # where scrolling happens
+        self.point = None       # where the user clicked
+        self.scroll_point = None  # where the wheel works (if not the click)
         self.frames = []
         self.pending_click = None
         self.busy = False
@@ -461,7 +476,7 @@ class ScrollShot:
             last = cur
         return last
 
-    def _activate_target(self):
+    def _activate_target(self, point):
         """Bring the window under the scroll point to the front, so the
         mouse wheel reaches it even if Windows' 'scroll inactive windows'
         setting is off."""
@@ -475,7 +490,7 @@ class ScrollShot:
             u32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
             u32.GetAncestor.restype = wintypes.HWND
             u32.SetForegroundWindow.argtypes = [wintypes.HWND]
-            hwnd = u32.WindowFromPoint(wintypes.POINT(*map(int, self.point)))
+            hwnd = u32.WindowFromPoint(wintypes.POINT(*map(int, point)))
             top = u32.GetAncestor(hwnd, 2) if hwnd else None   # GA_ROOT
             if top:
                 u32.SetForegroundWindow(top)
@@ -483,14 +498,15 @@ class ScrollShot:
         except Exception:
             pass
 
-    def scroll(self, notches):
+    def scroll(self, notches, point=None):
         # Nudge the pointer so the system re-checks which window is under
         # it (our overlay was just closed), then park it on the scroll point.
-        x, y = self.point
+        point = point or self.scroll_point or self.point
+        x, y = point
         self.mouse.position = (x + 1, y + 1)
         time.sleep(0.03)
-        self.mouse.position = self.point
-        self._activate_target()
+        self.mouse.position = point
+        self._activate_target(point)
         time.sleep(0.03)
         # One notch at a time, like a real wheel: some apps ignore a single
         # large multi-notch event.
@@ -532,6 +548,7 @@ class ScrollShot:
     def on_pick(self, mon, x, y):
         self.monitor = dict(mon)
         self.point = (x, y)
+        self.scroll_point = None
         self.finish_requested = False
         self.note = ""
         self._clear_overlays()
@@ -624,17 +641,45 @@ class ScrollShot:
         time.sleep(0.4)          # let the overlay fully disappear first
         self.root.update()
         prev = self.frames[-1]
-        self.scroll(max(1, int(self.settings["scroll_step"])))
+        notches = max(1, int(self.settings["scroll_step"]))
+        self.scroll(notches)
         time.sleep(0.15)         # let the wheel reach the page...
         self.enter_scroll_mode(busy=True)   # ...then cover it again (no hover)
         cur = self.grab_settled(prev=prev)
+        if similar(prev, cur) and len(self.frames) == 1:
+            # Nothing has scrolled yet, so the click probably landed on a part
+            # that doesn't scroll (a side panel's header or footer).
+            found = self._find_scrollable_spot(prev, notches)
+            if found is not None:
+                cur = found
         if similar(prev, cur):
-            self.note = ("The page didn't move - you may be at the end. "
+            self.note = ("The page didn't move - you may be at the end, or "
+                         "this spot can't be scrolled with the mouse wheel. "
                          "Click to try again or double-click to save.")
         else:
             self.note = ""
             self.frames.append(cur)
         self._set_busy(False)
+
+    def _find_scrollable_spot(self, prev, notches):
+        """The click spot didn't scroll: try the wheel at other heights in the
+        same column. Remembers the spot that works and returns the settled
+        screenshot taken there, or None if nothing moved anywhere."""
+        self.note = "Nothing moved here - trying other spots…"
+        self._update_hud()
+        for spot in alternative_spots(self.monitor, self.point):
+            self._clear_overlays()
+            self.busy = True
+            time.sleep(0.2)
+            self.scroll(notches, spot)
+            time.sleep(0.5)
+            if not similar(prev, self.grab()):
+                self.scroll_point = spot
+                self.note = ""
+                self.enter_scroll_mode(busy=True)
+                return self.grab_settled(prev=prev)
+        self.enter_scroll_mode(busy=True)
+        return None
 
     def finish(self, reason=None):
         self.finish_requested = False
