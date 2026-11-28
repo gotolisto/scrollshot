@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScrollShot: screenshot a whole scrolling page</title>
+<meta name="description" content="ScrollShot captures an entire scrolling page or panel as one continuous image. Free Windows app.">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #5b6270; --card: #f4f6fa;
+    --accent: #2563eb; --accent-fg: #ffffff; --border: #e1e5ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #eceef3; --muted: #9aa3b2; --card: #181b22;
+      --accent: #5b8cff; --accent-fg: #0b0d12; --border: #272b35;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 56px 16px 72px; }
+  header { text-align: center; margin-bottom: 40px; }
+  header img { width: 80px; height: 80px; border-radius: 18px; }
+  h1 { font-size: 2.4rem; margin: 16px 0 8px; line-height: 1.15; }
+  .lead { color: var(--muted); font-size: 1.15rem; margin: 0 0 24px; }
+  .btn {
+    display: inline-block; background: var(--accent); color: var(--accent-fg);
+    padding: 12px 24px; border-radius: 10px; font-weight: 600; text-decoration: none;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .note { color: var(--muted); font-size: .9rem; margin-top: 12px; }
+  h2 { font-size: 1.4rem; margin: 40px 0 12px; }
+  ol, ul { padding-left: 1.3em; }
+  li { margin: 6px 0; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; }
+  kbd {
+    background: var(--card); border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; font: .9em ui-monospace, Consolas, monospace;
+  }
+  a { color: var(--accent); }
+  footer { margin-top: 48px; color: var(--muted); font-size: .9rem; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.png" alt="ScrollShot icon">
+    <h1>ScrollShot</h1>
+    <p class="lead">Screenshot a whole scrolling page, not just what's visible.</p>
+    <a class="btn" href="https://github.com/gotolisto/scrollshot/releases/latest">Download for Windows</a>
+    <p class="note">Installer, no admin rights or Python needed.</p>
+  </header>
+
+  <h2>How it works</h2>
+  <ol>
+    <li>Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd>, <kbd>C</kbd> from any app. The screen turns blue.</li>
+    <li>Click the part you want to capture: the page, or a panel like a sidebar.</li>
+    <li><strong>Click</strong> to scroll down and capture more, as many times as you like.</li>
+    <li><strong>Double-click</strong> to save. <kbd>Esc</kbd> or right-click cancels.</li>
+  </ol>
+  <p>The image is saved as a PNG and copied to the clipboard, ready to paste.</p>
+
+  <h2>Why it's tidy</h2>
+  <ul>
+    <li>No browser toolbar, taskbar, or repeated sticky headers in the result.</li>
+    <li>Fixed sidebars appear once instead of being repeated down the image.</li>
+    <li>Works on lists inside a page that scroll on their own.</li>
+    <li>Lives in the system tray, with an optional start-with-Windows setting.</li>
+  </ul>
+
+  <div class="card">
+    <strong>Windows says "Windows protected your PC"?</strong>
+    The installer isn't code-signed. Click <em>More info</em>, then <em>Run anyway</em>.
+  </div>
+
+  <footer>
+    <a href="https://github.com/gotolisto/scrollshot">Source on GitHub</a>
+  </footer>
+</main>
+</body>
+</html>
