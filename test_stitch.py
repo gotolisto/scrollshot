@@ -242,5 +242,125 @@ for seed, step in [(0, 300), (1, 400), (3, 500), (6, 300), (9, 400)]:
               f"{w}x{h}  " + ("OK" if ok else f"FAIL: expected {SW_G}x~{want}"))
         results.append(ok)
 
+# H) Two scrolls: a page with a list of its own in the middle (an admin page
+#    with a long table). The wheel scrolls the list first; once the list is
+#    at its end the page scrolls. The result is the whole page with the list
+#    opened out to its full length.
+NP_H, WIN_Y, WIN_H, WIN_X, WIN_W = 1800, 150, 300, 30, 900
+inner_list = text_block(1400, WIN_W, 31)
+page_h = text_block(NP_H, 960, 30, gap_rows=[(WIN_Y - 28, WIN_Y + WIN_H + 28)])
+BOTTOM_H = NP_H - VIEW
+
+
+def screen_h(y, z):
+    pg = page_h.copy()
+    pg[WIN_Y:WIN_Y + WIN_H, WIN_X:WIN_X + WIN_W] = inner_list[z:z + WIN_H]
+    t = WIN_Y + int(z / (1400 - WIN_H) * (WIN_H - 90))
+    pg[t:t + 90, 940:950] = 90                           # list's scroll thumb
+    s = np.zeros((SH, SW, 3), np.uint8)
+    s[:90] = toolbar
+    s[90:90 + VIEW, :960] = pg[y:y + VIEW]
+    s[90:90 + VIEW, 960:] = 200
+    s[SH - 40:] = taskbar
+    return s
+
+
+def check_nested(name, out, page_rows, below=True):
+    """Page above the list, then the list's whole content, then (when the page
+    was scrolled past the list) the page below it."""
+    want = page_rows + (1400 - WIN_H)
+    h, w = out.shape[:2]
+    ok, why = True, ""
+    if w != SW:
+        ok, why = False, f"width {w}, should be the full {SW}"
+    elif abs(h - want) > 30:
+        ok, why = False, f"height {h}, expected about {want}"
+    elif not np.array_equal(out[:WIN_Y - 40, :960], page_h[:WIN_Y - 40]):
+        ok, why = False, "page above the list is wrong"
+    elif not np.array_equal(out[WIN_Y:WIN_Y + 1400, WIN_X:WIN_X + WIN_W],
+                            inner_list):
+        ok, why = False, "the list's content is not complete and in order"
+    elif below and not np.array_equal(
+            out[WIN_Y + 1400 + 40:WIN_Y + 1400 + 300, :960],
+            page_h[WIN_Y + WIN_H + 40:WIN_Y + WIN_H + 300]):
+        ok, why = False, "page below the list is wrong"
+    print(f"{name:52s} -> {w}x{h}  " + ("OK" if ok else "FAIL: " + why))
+    return ok
+
+
+# list first (page still at its top), then the page
+zs = [0, 200, 400, 600, 800, 1000, 1100]
+frames = [screen_h(0, z) for z in zs]
+frames += [screen_h(y, 1100) for y in (300, 600, 900, 1200, BOTTOM_H)]
+results.append(check_nested("H list scrolls, then the page", stitch(frames, (500, 300)),
+                            NP_H))
+
+# the same, clicking on the page's own margin
+results.append(check_nested("H list, then page, click at the margin",
+                            stitch(frames, (995, 300)), NP_H))
+
+# page first (down to where the whole list shows), then the list
+frames = [screen_h(y, 0) for y in (0, 50, 100)]
+frames += [screen_h(100, z) for z in (200, 400, 600, 800, 1000, 1100)]
+out = stitch(frames, (500, 300))
+results.append(check_nested("H page scrolls, then the list",
+                            out, 100 + VIEW, below=False))
+
+# I) A form of near-identical blocks (a checklist editor): every block looks
+#    the same except for its label, so a scroll distance one or two blocks too
+#    short matches the repeated parts better than the real one. Joined with
+#    the wrong distance, the later frames end up stacked on top of each other.
+FW, FH = 1070, 600
+cream = np.array([245, 240, 235], np.uint8)
+f_rng = np.random.default_rng(5)
+f_tab, f_task = noise(55, FW, 41), noise(22, FW, 42)
+f_side = np.zeros((FH, 145, 3), np.uint8)
+f_side[:] = (26, 90, 90)
+for yy in range(80, 500, 22):
+    f_side[yy:yy + 8, 20:20 + int(f_rng.integers(40, 100))] = 220
+f_head = np.full((100, FW - 145, 3), cream, np.uint8)
+f_head[20:30, 40:300], f_head[60:70, 40:500] = 60, 90
+F_VIEW = FH - 155 - 22
+
+
+def form_page(rows, pitch, seed=1):
+    r = np.random.default_rng(seed)
+    pg = np.empty((int(rows * pitch) + 200, FW - 145, 3), np.uint8)
+    pg[:] = cream
+    pg[:, 231:233] = 200                                 # the card's borders
+    pg[:, 683:685] = 200
+    for k in range(rows):
+        y, x = int(round(100 + k * pitch)), 246
+        n = int(r.integers(120, 330))                    # label: differs per block
+        pg[y + 6:y + 18, x:x + n] = r.integers(0, 140, (12, n, 3))
+        pg[y + 30:y + 40, x:x + 8] = 90
+        pg[y + 30:y + 40, x + 16:x + 70] = 150
+        for sx in (x, x + 140):                          # two selects: same every time
+            pg[y + 48:y + 66, sx:sx + 128] = 255
+            pg[y + 48:y + 50, sx:sx + 128] = 120
+            pg[y + 64:y + 66, sx:sx + 128] = 120
+            pg[y + 54:y + 60, sx + 8:sx + 60] = 100
+    return pg
+
+
+def form_screen(pg, y):
+    s = np.zeros((FH, FW, 3), np.uint8)
+    s[:55], s[:, :145], s[55:155, 145:] = f_tab, f_side, f_head
+    s[155:155 + F_VIEW, 145:] = pg[y:y + F_VIEW]
+    s[FH - 22:] = f_task
+    return s
+
+
+for pitch, step in [(93, 250), (93, 300), (90, 270), (111.5, 200)]:
+    pg = form_page(40, pitch)
+    ys = list(range(0, pg.shape[0] - F_VIEW, step)) + [pg.shape[0] - F_VIEW]
+    out = stitch([form_screen(pg, y) for y in ys], (600, 300))
+    n = pg.shape[0] - 200
+    ok = (out.shape[1] == FW and abs(out.shape[0] - (pg.shape[0] + 100)) <= 30
+          and np.array_equal(out[100:100 + n, 377:828], pg[:n, 232:683]))
+    print(f"{'I form of repeated blocks, pitch %s, step %d' % (pitch, step):52s} -> "
+          f"{out.shape[1]}x{out.shape[0]}  " + ("OK" if ok else "FAIL"))
+    results.append(ok)
+
 print("ALL OK" if all(results) else "SOME FAILED")
 raise SystemExit(0 if all(results) else 1)
