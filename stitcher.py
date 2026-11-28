@@ -342,9 +342,26 @@ def pair_rect(A, B, d, hint=None):
 def stitch(frames, hint=None):
     """Join consecutive frames into one tall image, always as wide as the
     screen. hint: (x, y) in frame pixels where the user clicked, if known;
-    it only helps choose between two panels that scroll independently."""
+    it only helps choose between two panels that scroll independently.
+
+    A page with a scrolling list of its own (a long table in an admin page)
+    is captured in two stages: the wheel moves the list first, then, once
+    the list is at its end, the page. Those are joined by _stitch_nested; every
+    other capture is one stage."""
     if len(frames) == 1:
         return frames[0]
+    nested = _stitch_nested(frames, hint)
+    if nested is not None:
+        return nested
+    return _stitch_stage(frames, hint)[0]
+
+
+def _stitch_stage(frames, hint=None, rows=None):
+    """One scrolling panel, scrolled through all the frames. Returns
+    (image, (top, bottom), ys): the image, the rows of the screen that
+    scrolled, and the image row at which each frame starts. (top, bottom) is
+    None when nothing could be told to have scrolled. rows: the rows that
+    scrolled, when they are already known."""
     h, w = frames[0].shape[:2]
     n = len(frames)
     same = [False] + [similar(frames[i - 1], frames[i]) for i in range(1, n)]
@@ -388,7 +405,7 @@ def stitch(frames, hint=None):
             near = [d for d in (before, after) if d]
             ds[i] = max(near) if near else fallback
     if not any(ds):
-        return frames[-1]
+        return frames[-1], None, None
 
     # Pass 2: which rows scrolled? One band for the whole capture, taken
     # across the full screen width.
@@ -396,18 +413,100 @@ def stitch(frames, hint=None):
     prev = _prepare(frames[0])
     for i in range(1, n):
         cur = _prepare(frames[i])
-        if ds[i] and ds[i] < h and not same[i]:
+        if rows is None and ds[i] and ds[i] < h and not same[i]:
             r = pair_rect(prev, cur, ds[i], hint)
             if r:
                 rects.append(r)
         prev = cur
-    if rects:
+    if rows is not None:
+        top, bottom = rows
+    elif rects:
         top = min(r[0] for r in rects)
         bottom = max(r[1] for r in rects)
     else:
         top, bottom = 0, h
     grays = [_gray(f) for f in frames]
-    return compose(frames, grays, (top, bottom, 0, w), ds)
+    return (compose(frames, grays, (top, bottom, 0, w), ds), (top, bottom),
+            np.cumsum(ds))
+
+
+# ----------------------------------------------------- a list inside a page
+NEST_MARGIN = 16            # the list sits at least this far inside the panel
+NEST_SLACK = 24             # rows of difference that still count as the same edge
+
+
+def _nested_split(frames):
+    """Tell a capture made of two stages from an ordinary one. In the first
+    stage only a part inside the page moved (a list with its own scrollbar),
+    in the other the whole page moved, or the other way round. Returns
+    (inner_frames, outer_frames, inner_first, rows), where rows is the part
+    of the screen the list scrolled in, or None when the capture is
+    not that: every pair must clearly belong to one of the two stages, with
+    the list stage a run at the start or at the end, and the list well inside
+    the part that scrolls with the page (page content above and below it).
+    Anything less clear is left to the ordinary single stage."""
+    n = len(frames)
+    bounds = {}
+    for i in range(1, n):
+        if not similar(frames[i - 1], frames[i]):
+            b = change_bounds(frames[i - 1], frames[i])
+            if b:
+                bounds[i] = b
+    pairs = sorted(bounds)
+    if len(pairs) < 2:
+        return None
+    big = max(pairs, key=lambda i: bounds[i][1] - bounds[i][0])
+    ot, ob = bounds[big][0], bounds[big][1]
+    kinds = []
+    for i in pairs:
+        t, b = bounds[i][0], bounds[i][1]
+        if abs(t - ot) <= NEST_SLACK and abs(b - ob) <= NEST_SLACK:
+            kinds.append("outer")
+        elif t >= ot + NEST_MARGIN and b <= ob - NEST_MARGIN:
+            kinds.append("inner")
+        else:
+            return None
+    if "inner" not in kinds or "outer" not in kinds:
+        return None
+    k = kinds.count("inner")
+    mine = [i for i, kind in zip(pairs, kinds) if kind == "inner"]
+    rows = (min(bounds[i][0] for i in mine), max(bounds[i][1] for i in mine))
+    if kinds[:k] == ["inner"] * k:
+        p, q = pairs[k - 1], pairs[k]          # last list pair, first page pair
+        return frames[:p + 1], frames[q - 1:], True, rows
+    if kinds[-k:] == ["inner"] * k:
+        e, q = pairs[-k - 1], pairs[-k]        # last page pair, first list pair
+        return frames[q - 1:], frames[:e + 1], False, rows
+    return None
+
+
+def _stitch_nested(frames, hint):
+    """A page with a list of its own. The page is joined from the stage in
+    which it scrolled; the list from the stage in which it scrolled; and the
+    list's whole content replaces the part of the page where the list sits,
+    which pushes everything below it further down. None when the capture is
+    not of that kind or the stages don't fit together (the caller then joins
+    it as an ordinary single stage)."""
+    split = _nested_split(frames)
+    if split is None:
+        return None
+    inner, outer, inner_first, rows = split
+    if len(inner) < 2 or len(outer) < 2:
+        return None
+    page, prect, pys = _stitch_stage(outer, hint)
+    listing, lrect, _ = _stitch_stage(inner, hint, rows)
+    if prect is None or lrect is None:
+        return None
+    (pt, pb), (lt, lb) = prect, lrect
+    if not (pt < lt and lb < pb):
+        return None                            # the list isn't inside the page
+    # Where the list sits in the page image: in the frame both stages share.
+    shared = 0 if inner_first else len(outer) - 1
+    r0 = int(pys[shared]) + (lt - pt)
+    r1 = r0 + (lb - lt)
+    if r0 < 0 or r1 > page.shape[0] or listing.shape[0] < r1 - r0:
+        return None
+    return np.concatenate([page[:r0], listing, page[r1:]], axis=0)
 
 
 def _fixed_mask(grays, ds, top, bottom, c0, c1, share=1.0, refine=True):

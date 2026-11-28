@@ -58,6 +58,15 @@ Every screenshot is saved as a PNG **and copied to the clipboard**, ready to pas
   (The **Fn** key can't be used: laptops handle it inside the keyboard and never send it
   to Windows.)
 
+## Pages with a scrolling list inside
+
+Some pages scroll twice: the page, and a long table or list inside it that has its own
+scrollbar. Click on the list. ScrollShot scrolls it to its end, then, when the list stops
+moving, tries the wheel at other heights in the same column (outside the list) so the page
+itself scrolls on. The saved image is the whole page with the list opened out to its full
+length. This works when the whole list is on screen with some page above and below it, and
+each click scrolls the list by less than its height (lower **Scroll per click** if not).
+
 ## Known limits
 
 - Videos and carousels that keep moving can confuse the alignment.

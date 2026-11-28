@@ -24,7 +24,7 @@ import numpy as np
 from PIL import Image
 from pynput.mouse import Controller as MouseController
 
-from stitcher import similar, stitch
+from stitcher import change_bounds, similar, stitch
 
 IS_WIN = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
@@ -135,15 +135,19 @@ def set_autostart(on):
                 pass
 
 
-def alternative_spots(mon, point, count=6):
+def alternative_spots(mon, point, count=6, avoid=None):
     """Other places to try the mouse wheel when the click spot didn't scroll:
     the same column, at other heights, from the middle of the screen out. A
     side panel's header and footer stay put and swallow the wheel, while its
-    body scrolls."""
+    body scrolls. avoid: (top, bottom) screen rows to leave out, the part that
+    just scrolled as far as it can (a list inside a page): the wheel has to
+    go somewhere else for the page itself to move."""
     x, y = point
     spots = []
-    for f in (0.5, 0.35, 0.65, 0.25, 0.75, 0.15, 0.85):
+    for f in (0.5, 0.35, 0.65, 0.25, 0.75, 0.15, 0.85, 0.05, 0.95):
         sy = int(mon["top"] + mon["height"] * f)
+        if avoid and avoid[0] <= sy < avoid[1]:
+            continue
         if abs(sy - y) >= 60:                  # not just next to the failed one
             spots.append((x, sy))
     return spots[:count]
@@ -168,6 +172,7 @@ class ScrollShot:
         self.monitor = None
         self.point = None       # where the user clicked
         self.scroll_point = None  # where the wheel works (if not the click)
+        self.searched = False     # already looked for another spot while stuck
         self.frames = []
         self.pending_click = None
         self.busy = False
@@ -549,6 +554,7 @@ class ScrollShot:
         self.monitor = dict(mon)
         self.point = (x, y)
         self.scroll_point = None
+        self.searched = False
         self.finish_requested = False
         self.note = ""
         self._clear_overlays()
@@ -646,10 +652,13 @@ class ScrollShot:
         time.sleep(0.15)         # let the wheel reach the page...
         self.enter_scroll_mode(busy=True)   # ...then cover it again (no hover)
         cur = self.grab_settled(prev=prev)
-        if similar(prev, cur) and len(self.frames) == 1:
-            # Nothing has scrolled yet, so the click probably landed on a part
-            # that doesn't scroll (a side panel's header or footer).
+        if similar(prev, cur) and not self.searched:
+            # Nothing moved: the click landed on a part that doesn't scroll (a
+            # side panel's header or footer), or on a list inside the page that
+            # has reached its end. Look for another spot to scroll, once per
+            # stretch of stuck clicks (the search takes a few seconds).
             found = self._find_scrollable_spot(prev, notches)
+            self.searched = found is None
             if found is not None:
                 cur = found
         if similar(prev, cur):
@@ -658,6 +667,7 @@ class ScrollShot:
                          "Click to try again or double-click to save.")
         else:
             self.note = ""
+            self.searched = False
             self.frames.append(cur)
         self._set_busy(False)
 
@@ -667,7 +677,8 @@ class ScrollShot:
         screenshot taken there, or None if nothing moved anywhere."""
         self.note = "Nothing moved here - trying other spots…"
         self._update_hud()
-        for spot in alternative_spots(self.monitor, self.point):
+        for spot in alternative_spots(self.monitor, self.point,
+                                      avoid=self._scrolled_rows()):
             self._clear_overlays()
             self.busy = True
             time.sleep(0.2)
@@ -680,6 +691,19 @@ class ScrollShot:
                 return self.grab_settled(prev=prev)
         self.enter_scroll_mode(busy=True)
         return None
+
+    def _scrolled_rows(self):
+        """Screen rows (top, bottom) that moved in the last capture, or None
+        before there is a second one. When that part is stuck at its end,
+        the wheel has to be tried elsewhere."""
+        if len(self.frames) < 2:
+            return None
+        b = change_bounds(self.frames[-2], self.frames[-1])
+        if not b:
+            return None
+        m = self.monitor
+        scale = m["height"] / self.frames[-1].shape[0]
+        return (m["top"] + int(b[0] * scale), m["top"] + int(b[1] * scale))
 
     def finish(self, reason=None):
         self.finish_requested = False

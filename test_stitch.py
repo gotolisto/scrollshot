@@ -242,5 +242,69 @@ for seed, step in [(0, 300), (1, 400), (3, 500), (6, 300), (9, 400)]:
               f"{w}x{h}  " + ("OK" if ok else f"FAIL: expected {SW_G}x~{want}"))
         results.append(ok)
 
+# H) Two scrolls: a page with a list of its own in the middle (an admin page
+#    with a long table). The wheel scrolls the list first; once the list is
+#    at its end the page scrolls. The result is the whole page with the list
+#    opened out to its full length.
+NP_H, WIN_Y, WIN_H, WIN_X, WIN_W = 1800, 150, 300, 30, 900
+inner_list = text_block(1400, WIN_W, 31)
+page_h = text_block(NP_H, 960, 30, gap_rows=[(WIN_Y - 28, WIN_Y + WIN_H + 28)])
+BOTTOM_H = NP_H - VIEW
+
+
+def screen_h(y, z):
+    pg = page_h.copy()
+    pg[WIN_Y:WIN_Y + WIN_H, WIN_X:WIN_X + WIN_W] = inner_list[z:z + WIN_H]
+    t = WIN_Y + int(z / (1400 - WIN_H) * (WIN_H - 90))
+    pg[t:t + 90, 940:950] = 90                           # list's scroll thumb
+    s = np.zeros((SH, SW, 3), np.uint8)
+    s[:90] = toolbar
+    s[90:90 + VIEW, :960] = pg[y:y + VIEW]
+    s[90:90 + VIEW, 960:] = 200
+    s[SH - 40:] = taskbar
+    return s
+
+
+def check_nested(name, out, page_rows, below=True):
+    """Page above the list, then the list's whole content, then (when the page
+    was scrolled past the list) the page below it."""
+    want = page_rows + (1400 - WIN_H)
+    h, w = out.shape[:2]
+    ok, why = True, ""
+    if w != SW:
+        ok, why = False, f"width {w}, should be the full {SW}"
+    elif abs(h - want) > 30:
+        ok, why = False, f"height {h}, expected about {want}"
+    elif not np.array_equal(out[:WIN_Y - 40, :960], page_h[:WIN_Y - 40]):
+        ok, why = False, "page above the list is wrong"
+    elif not np.array_equal(out[WIN_Y:WIN_Y + 1400, WIN_X:WIN_X + WIN_W],
+                            inner_list):
+        ok, why = False, "the list's content is not complete and in order"
+    elif below and not np.array_equal(
+            out[WIN_Y + 1400 + 40:WIN_Y + 1400 + 300, :960],
+            page_h[WIN_Y + WIN_H + 40:WIN_Y + WIN_H + 300]):
+        ok, why = False, "page below the list is wrong"
+    print(f"{name:52s} -> {w}x{h}  " + ("OK" if ok else "FAIL: " + why))
+    return ok
+
+
+# list first (page still at its top), then the page
+zs = [0, 200, 400, 600, 800, 1000, 1100]
+frames = [screen_h(0, z) for z in zs]
+frames += [screen_h(y, 1100) for y in (300, 600, 900, 1200, BOTTOM_H)]
+results.append(check_nested("H list scrolls, then the page", stitch(frames, (500, 300)),
+                            NP_H))
+
+# the same, clicking on the page's own margin
+results.append(check_nested("H list, then page, click at the margin",
+                            stitch(frames, (995, 300)), NP_H))
+
+# page first (down to where the whole list shows), then the list
+frames = [screen_h(y, 0) for y in (0, 50, 100)]
+frames += [screen_h(100, z) for z in (200, 400, 600, 800, 1000, 1100)]
+out = stitch(frames, (500, 300))
+results.append(check_nested("H page scrolls, then the list",
+                            out, 100 + VIEW, below=False))
+
 print("ALL OK" if all(results) else "SOME FAILED")
 raise SystemExit(0 if all(results) else 1)
