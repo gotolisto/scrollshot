@@ -306,5 +306,61 @@ out = stitch(frames, (500, 300))
 results.append(check_nested("H page scrolls, then the list",
                             out, 100 + VIEW, below=False))
 
+# I) A form of near-identical blocks (a checklist editor): every block looks
+#    the same except for its label, so a scroll distance one or two blocks too
+#    short matches the repeated parts better than the real one. Joined with
+#    the wrong distance, the later frames end up stacked on top of each other.
+FW, FH = 1070, 600
+cream = np.array([245, 240, 235], np.uint8)
+f_rng = np.random.default_rng(5)
+f_tab, f_task = noise(55, FW, 41), noise(22, FW, 42)
+f_side = np.zeros((FH, 145, 3), np.uint8)
+f_side[:] = (26, 90, 90)
+for yy in range(80, 500, 22):
+    f_side[yy:yy + 8, 20:20 + int(f_rng.integers(40, 100))] = 220
+f_head = np.full((100, FW - 145, 3), cream, np.uint8)
+f_head[20:30, 40:300], f_head[60:70, 40:500] = 60, 90
+F_VIEW = FH - 155 - 22
+
+
+def form_page(rows, pitch, seed=1):
+    r = np.random.default_rng(seed)
+    pg = np.empty((int(rows * pitch) + 200, FW - 145, 3), np.uint8)
+    pg[:] = cream
+    pg[:, 231:233] = 200                                 # the card's borders
+    pg[:, 683:685] = 200
+    for k in range(rows):
+        y, x = int(round(100 + k * pitch)), 246
+        n = int(r.integers(120, 330))                    # label: differs per block
+        pg[y + 6:y + 18, x:x + n] = r.integers(0, 140, (12, n, 3))
+        pg[y + 30:y + 40, x:x + 8] = 90
+        pg[y + 30:y + 40, x + 16:x + 70] = 150
+        for sx in (x, x + 140):                          # two selects: same every time
+            pg[y + 48:y + 66, sx:sx + 128] = 255
+            pg[y + 48:y + 50, sx:sx + 128] = 120
+            pg[y + 64:y + 66, sx:sx + 128] = 120
+            pg[y + 54:y + 60, sx + 8:sx + 60] = 100
+    return pg
+
+
+def form_screen(pg, y):
+    s = np.zeros((FH, FW, 3), np.uint8)
+    s[:55], s[:, :145], s[55:155, 145:] = f_tab, f_side, f_head
+    s[155:155 + F_VIEW, 145:] = pg[y:y + F_VIEW]
+    s[FH - 22:] = f_task
+    return s
+
+
+for pitch, step in [(93, 250), (93, 300), (90, 270), (111.5, 200)]:
+    pg = form_page(40, pitch)
+    ys = list(range(0, pg.shape[0] - F_VIEW, step)) + [pg.shape[0] - F_VIEW]
+    out = stitch([form_screen(pg, y) for y in ys], (600, 300))
+    n = pg.shape[0] - 200
+    ok = (out.shape[1] == FW and abs(out.shape[0] - (pg.shape[0] + 100)) <= 30
+          and np.array_equal(out[100:100 + n, 377:828], pg[:n, 232:683]))
+    print(f"{'I form of repeated blocks, pitch %s, step %d' % (pitch, step):52s} -> "
+          f"{out.shape[1]}x{out.shape[0]}  " + ("OK" if ok else "FAIL"))
+    results.append(ok)
+
 print("ALL OK" if all(results) else "SOME FAILED")
 raise SystemExit(0 if all(results) else 1)

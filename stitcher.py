@@ -97,6 +97,7 @@ CELL_EQ = 3.0               # brightness difference that still counts as equal
 MIN_CELLS = 12              # fewest matching cells that prove an overlap
 STRONG_CELLS = 250          # matching cells that settle a distance on their own
 SHARP = 0.08                # a real shift beats its neighbours (d +/- 1) by this much
+QUALITY_POWER = 8           # how hard disagreeing cells count against a distance
 
 
 def _edge_cells(p, k=2):
@@ -155,10 +156,18 @@ def shift_evidence(A, B):
     and anything that did not move at all don't vote, so a toolbar or a
     fixed sidebar can't pull the answer off course.
 
-    Returns (score, peak): score[d-1] is the number of matching cells and
-    peak[d-1] says whether d stands out as a sharp peak. (Textured content
-    also half-matches itself at a shift of a pixel or two; a real shift is
-    exact and drops away on either side.)"""
+    Returns (score, peak, quality): score[d-1] is the number of matching
+    cells and peak[d-1] says whether d stands out as a sharp peak. (Textured
+    content also half-matches itself at a shift of a pixel or two; a real
+    shift is exact and drops away on either side.) quality[d-1] is the score
+    weighted by the share of voting cells that match, and is what distances
+    are ranked by.
+
+    That matters for pages whose rows repeat (a form of identical blocks that
+    differ only in their text): a distance one or two blocks too short
+    overlaps more of the screen, so its repeated parts match more cells than
+    the real distance does, but the text of every block disagrees there,
+    while at the real distance nothing does."""
     h = A["g"].shape[0]
     max_d = h - max(16, h // 12)
     pa, pb = A["p"], B["p"]
@@ -172,7 +181,7 @@ def shift_evidence(A, B):
     left = np.concatenate([[0.0], ratio[:-1]])
     right = np.concatenate([ratio[1:], [0.0]])
     peak = (score >= MIN_CELLS) & (ratio - np.maximum(left, right) >= SHARP)
-    return score, peak
+    return score, peak, score * ratio ** QUALITY_POWER
 
 
 def choose_shift(ev, usual):
@@ -184,12 +193,12 @@ def choose_shift(ev, usual):
     stretch, or a jump bigger than the screen)."""
     if ev is None:
         return None
-    score, peak = ev
+    score, peak, quality = ev
     hit = np.where(peak)[0]
-    best = int(hit[np.argmax(score[hit])]) + 1 if len(hit) else None
+    best = int(hit[np.argmax(quality[hit])]) + 1 if len(hit) else None
     n_best = float(score[best - 1]) if best else 0.0
     if usual and 1 <= usual <= len(score) and peak[usual - 1] \
-            and score[usual - 1] >= 0.5 * n_best:
+            and quality[usual - 1] >= 0.5 * float(quality[best - 1]):
         return int(usual)                      # fits the usual step
     if best and n_best >= STRONG_CELLS:
         return best                            # clearly a different step
@@ -387,7 +396,7 @@ def _stitch_stage(frames, hint=None, rows=None):
                       (pairs, STRONG_CELLS), (pairs, 3 * MIN_CELLS)):
         if not use:
             continue
-        total = sum(evidence[i][0] * evidence[i][1] for i in use)
+        total = sum(evidence[i][2] * evidence[i][1] for i in use)
         if total.max() >= need:
             usual = int(np.argmax(total)) + 1
             break
